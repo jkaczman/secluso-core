@@ -45,3 +45,12 @@ secluso-v*
 __pycache__
 *.wic
 metadata.json
+
+# Exclude Cargo.lock files that are not meant to be checked into git
+app_native/Cargo.lock
+client_lib/Cargo.lock
+client_server_lib/Cargo.lock
+motion_ai/pipeline/Cargo.lock
+motion_ai/cli/Cargo.lock
+server_backbone/Cargo.lock
+tester/Cargo.lock
