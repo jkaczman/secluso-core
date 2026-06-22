@@ -39,7 +39,7 @@ pub fn pair_all(
     // If None, this has to be an IP camera. If the camera_secret does not exist for Raspberry Pi, it will not proceed earlier on in the flow.
     #[cfg(feature = "raspberry")]
     assert!(
-        input_camera_secret.is_none(),
+        input_camera_secret.is_some(),
         "A Raspberry Pi camera must have a camera secret"
     );
 
