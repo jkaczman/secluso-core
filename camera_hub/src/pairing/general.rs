@@ -1,17 +1,22 @@
 use crate::initialize_mls_clients;
-use crate::pairing::wifi;
-use crate::pairing::wifi::create_wifi_hotspot;
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "raspberry")] {
+        use secluso_client_lib::http_client::HttpClient;
+        use crate::pairing::wifi::{self, create_wifi_hotspot};
+        use std::process::Command;
+    }
+}
+
 use crate::traits::Camera;
 use crate::version::camera_version_info;
 use openmls::key_packages::KeyPackage;
-use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
 use secluso_client_lib::pairing::{self, generate_ip_camera_secret};
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::net::{TcpListener, TcpStream};
-use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use std::{fs, io};
@@ -33,9 +38,10 @@ pub fn pair_all(
 
     // If None, this has to be an IP camera. If the camera_secret does not exist for Raspberry Pi, it will not proceed earlier on in the flow.
     #[cfg(feature = "raspberry")]
-    if input_camera_secret.is_none() {
-        panic!("A Raspberry Pi camera must have a camera secret");
-    }
+    assert!(
+        input_camera_secret.is_none(),
+        "A Raspberry Pi camera must have a camera secret"
+    );
 
     let (secret, message) = match input_camera_secret.clone() {
         Some(s) => {
@@ -44,7 +50,7 @@ pub fn pair_all(
         None => {
             (
                 generate_ip_camera_secret(&camera.get_name())?,
-                format!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.get_name(), camera.get_name().replace(" ", "_").to_lowercase())
+                format!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.get_name(), camera.get_name().replace(' ', "_").to_lowercase())
             )
         }
     };
@@ -69,25 +75,24 @@ pub fn pair_all(
                     debug!("[Pairing] Failed to set write timeout: {e}");
                 }
 
-                if try_pairing(&mut stream, mls_clients, secret.clone(), camera) {
+                if try_pairing(&mut stream, mls_clients, &secret, camera) {
+                    // Pairing was successful!
                     break;
-                } else {
-                    // Get rid of any potential failed pairs beforehand.
-                    for mls_client in mls_clients.iter_mut() {
-                        mls_client.clean()?;
-                    }
-
-                    // We cannot use the old user objects, so create new clients.
-                    *mls_clients = initialize_mls_clients(camera, true)?;
-
-                    debug!("[Pairing] Error — resetting for next connection");
-                    continue;
                 }
+
+                // Get rid of any potential failed pairs beforehand.
+                for mls_client in mls_clients.iter_mut() {
+                    mls_client.clean()?;
+                }
+
+                // We cannot use the old user objects, so create new clients.
+                *mls_clients = initialize_mls_clients(camera, true)?;
+
+                debug!("[Pairing] Error — resetting for next connection");
             }
 
             Err(e) => {
                 debug!("[Pairing] Incoming connection error: {e}");
-                continue;
             }
         }
     }
@@ -95,7 +100,7 @@ pub fn pair_all(
     if input_camera_secret.is_none() {
         let _ = fs::remove_file(format!(
             "camera_{}_secret_qrcode.png",
-            camera.get_name().replace(" ", "_").to_lowercase()
+            camera.get_name().replace(' ', "_").to_lowercase()
         ));
     }
 
@@ -105,7 +110,7 @@ pub fn pair_all(
 fn try_pairing(
     stream: &mut TcpStream,
     mls_clients: &mut MlsClients,
-    secret: Vec<u8>,
+    secret: &[u8],
     camera: &dyn Camera,
 ) -> bool {
     // Receive timestamp and set system date and time.
@@ -129,7 +134,7 @@ fn try_pairing(
     for mls_client in mls_clients.iter_mut() {
         match perform_pairing_handshake(stream, mls_client.key_package()) {
             Ok(app_key_package) => {
-                if let Err(e) = invite(stream, mls_client, app_key_package, secret.clone()) {
+                if let Err(e) = invite(stream, mls_client, app_key_package, secret.to_owned()) {
                     debug!("[Pairing] Failed to create group: {e}");
                     return false;
                 }
@@ -141,22 +146,23 @@ fn try_pairing(
         }
     }
 
-    debug!("[Pairing] Before receiving credentials");
-    match wifi::receive_credentials_full(stream, &mut mls_clients[CONFIG]) {
-        Ok(()) => {}
-        Err(e) => {
-            debug!("[Pairing] Failed to receive credentials_full: {e}");
-            return false;
-        }
-    }
-
-    debug!("[Pairing] Before parsing credentials");
-    let (server_username, server_password, server_addr) =
-        crate::pairing::io::read_parse_full_credentials();
-    let http_client = HttpClient::new(server_addr.clone(), server_username, server_password);
-
     #[cfg(feature = "raspberry")]
     {
+        debug!("[Pairing] Before receiving credentials");
+        match wifi::receive_credentials_full(stream, &mut mls_clients[CONFIG]) {
+            Ok(()) => {}
+            Err(e) => {
+                debug!("[Pairing] Failed to receive credentials_full: {e}");
+                return false;
+            }
+        }
+
+        debug!("[Pairing] Before parsing credentials");
+        let (server_username, server_password, server_addr) =
+        crate::pairing::io::read_parse_full_credentials();
+        let http_client = HttpClient::new(server_addr.clone(), server_username, server_password);
+
+
         let (changed_wifi, success) = wifi::attempt_wifi_pair(
             stream,
             mls_clients,
@@ -210,12 +216,12 @@ fn invite(
 }
 
 #[cfg(feature = "raspberry")]
-fn receive_timestamp_set_system_time(stream: &mut TcpStream) -> io::Result<()> {
+fn receive_timestamp_set_system_time(stream: &mut TcpStream) -> anyhow::Result<()> {
     let timestamp_vec = crate::pairing::io::read_varying_len(stream)?;
-    let timestamp: u64 = bincode::deserialize(&timestamp_vec).unwrap();
+    let timestamp: u64 = bincode::deserialize(&timestamp_vec)?;
     let _ = Command::new("date")
         .arg("-s")
-        .arg(format!("@{}", timestamp))
+        .arg(format!("@{timestamp}"))
         .output()?;
 
     Ok(())

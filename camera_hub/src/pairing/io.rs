@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::Duration;
+use anyhow::anyhow;
 use rand::Rng;
 use secluso_client_lib::pairing::MAX_ALLOWED_MSG_LEN;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
@@ -33,7 +34,7 @@ pub fn read_parse_full_credentials() -> (String, String, String) {
 
 /// Utility function for outside the pairing module
 pub fn get_names(
-    state_dir: String,
+    state_dir: &str,
     first_time: bool,
     camera_filename: String,
     group_filename: String,
@@ -66,12 +67,12 @@ pub fn get_names(
     } else {
         let file = File::open(camera_path).expect("Cannot open file to send");
         let mut reader =
-            BufReader::with_capacity(file.metadata()?.len() as usize, file);
+            BufReader::with_capacity(usize::try_from(file.metadata()?.len())?, file);
         let cname = reader.fill_buf()?;
 
         let file = File::open(group_path).expect("Cannot open file to send");
         let mut reader =
-            BufReader::with_capacity(file.metadata()?.len() as usize, file);
+            BufReader::with_capacity(usize::try_from(file.metadata()?.len())?, file);
         let gname = reader.fill_buf()?;
 
         (
@@ -97,40 +98,40 @@ pub(crate) fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Resul
 }
 
 // TODO: This is a duplicate of the code in app_native.
-pub(crate) fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+pub(crate) fn read_varying_len(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
     let mut len_data = [0u8; 8];
 
     match stream.read_exact(&mut len_data) {
-        Ok(_) => {}
+        Ok(()) => {}
         Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-            return Err(io::Error::new(
+            return Err(anyhow!(io::Error::new(
                 ErrorKind::WouldBlock,
                 "Length read would block",
-            ));
+            )))
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(anyhow!(e)),
     }
 
     let len = u64::from_be_bytes(len_data);
 
     if len > MAX_ALLOWED_MSG_LEN {
         error!("Communicated message length ({len}) exceeds the allowed length ({MAX_ALLOWED_MSG_LEN})");
-        return Err(io::Error::new(
+        return Err(anyhow!(io::Error::new(
             ErrorKind::InvalidInput,
             "Intended message length is too large",
-        ));
+        )))
     }
 
-    let mut msg = vec![0u8; len as usize];
+    let mut msg = vec![0u8; usize::try_from(len)?];
     let mut offset = 0;
 
     while offset < msg.len() {
         match stream.read(&mut msg[offset..]) {
             Ok(0) => {
-                return Err(io::Error::new(
+                return Err(anyhow!(io::Error::new(
                     ErrorKind::UnexpectedEof,
                     "Socket closed during read",
-                ))
+                )))
             }
             Ok(n) => {
                 offset += n;
@@ -138,9 +139,8 @@ pub(crate) fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
             Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
                 // retry a few times with a short delay
                 thread::sleep(Duration::from_millis(10));
-                continue;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(anyhow!(e)),
         }
     }
 

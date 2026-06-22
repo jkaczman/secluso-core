@@ -42,7 +42,7 @@ fn decrypt_msg(mls_client: &mut MlsClient, msg: Vec<u8>) -> io::Result<Vec<u8>> 
 pub(crate) fn receive_credentials_full(
     stream: &mut TcpStream,
     mls_client: &mut MlsClient,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     let encrypted_msg = crate::pairing::io::read_varying_len(stream)?;
     let credentials_full_bytes = decrypt_msg(mls_client, encrypted_msg)?;
 
@@ -58,7 +58,7 @@ pub(crate) fn receive_credentials_full(
 pub(crate) fn request_wifi_info(
     stream: &mut TcpStream,
     mls_client: &mut MlsClient,
-) -> io::Result<(String, String, String)> {
+) -> anyhow::Result<(String, String, String)> {
     // Combine into one message to reduce risk of non-blocking errors
     let wifi_msg = crate::pairing::io::read_varying_len(stream)?;
     let wifi_bytes = decrypt_msg(mls_client, wifi_msg)?;
@@ -251,8 +251,7 @@ fn wait_for_wifi_readiness(ssid: &str, server_addr: &str, timeout: Duration) -> 
         let active_names = active_connection_names()?;
         if !active_names.iter().any(|name| name == ssid) {
             last_reason = format!(
-                "active connections are {:?}, expected {}",
-                active_names, ssid
+                "active connections are {active_names:?}, expected {ssid}",
             );
             thread::sleep(Duration::from_millis(500));
             continue;
@@ -261,7 +260,7 @@ fn wait_for_wifi_readiness(ssid: &str, server_addr: &str, timeout: Duration) -> 
         // A successful join is not enough if the hotspot profile never actually went away.
         let hotspot_names = active_hotspot_connection_names()?;
         if !hotspot_names.is_empty() {
-            last_reason = format!("hotspot connection(s) still active: {:?}", hotspot_names);
+            last_reason = format!("hotspot connection(s) still active: {hotspot_names:?}");
             thread::sleep(Duration::from_millis(500));
             continue;
         }
@@ -335,8 +334,8 @@ fn wait_for_ssid_visibility(ssid: &str, timeout: Duration) -> io::Result<()> {
 }
 
 pub(crate) fn attempt_wifi_connection(
-    ssid: String,
-    password: String,
+    ssid: &str,
+    password: &str,
     server_addr: &str,
 ) -> io::Result<()> {
     debug!("[Pairing] Attempting wifi connection");
@@ -379,8 +378,8 @@ pub(crate) fn attempt_wifi_connection(
         // split availability check from our attempt to join it on purpose.
         // behaves a lot better in the real world than immediately attempting
         // a connect on a network that may have only just started showing up
-        if let Err(e) = wait_for_ssid_visibility(&ssid, Duration::from_secs(12)) {
-            debug!("[Pairing] SSID '{}' not found in scan: {}", ssid, e);
+        if let Err(e) = wait_for_ssid_visibility(ssid, Duration::from_secs(12)) {
+            debug!("[Pairing] SSID '{ssid}' not found in scan: {e}");
             if n == 4 {
                 bring_hotspot_back_up()?;
                 return Err(e);
@@ -391,7 +390,7 @@ pub(crate) fn attempt_wifi_connection(
         // Blow away any stale profile for this SSID before retrying. Reusing a half-bad
         // saved connection can make retries behave weirdly differently from a fresh join.
         let _ = Command::new("nmcli")
-            .args(["connection", "delete", "id", ssid.as_str()])
+            .args(["connection", "delete", "id", ssid])
             .output(); // ignore error if it doesn't exist
 
         // Use direct nmcli args instead of shell strings so we are not depending on quoting luck
@@ -400,9 +399,9 @@ pub(crate) fn attempt_wifi_connection(
                 "device",
                 "wifi",
                 "connect",
-                ssid.as_str(),
+                ssid,
                 "password",
-                password.as_str(),
+                password,
             ])
             .output()?;
 
@@ -415,14 +414,14 @@ pub(crate) fn attempt_wifi_connection(
                 .args([
                     "connection",
                     "modify",
-                    ssid.as_str(),
+                    ssid,
                     "connection.autoconnect",
                     "yes",
                 ])
                 .output();
 
             // Prove it's ready thru an IP, default route and a path to the relay.
-            match wait_for_wifi_readiness(&ssid, server_addr, Duration::from_secs(25)) {
+            match wait_for_wifi_readiness(ssid, server_addr, Duration::from_secs(25)) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     debug!("[Pairing] Wi-Fi readiness check failed on attempt {n}: {e}");
@@ -443,8 +442,7 @@ pub(crate) fn attempt_wifi_connection(
     bring_hotspot_back_up()?;
 
     Err(io::Error::other(format!(
-        "Failed to connect to Wi-Fi '{}'",
-        ssid
+        "Failed to connect to Wi-Fi '{ssid}'"
     )))
 }
 
@@ -534,8 +532,8 @@ pub(crate) fn attempt_wifi_pair(
     debug!("[Pairing] Before request wifi info");
     match request_wifi_info(stream, &mut mls_clients[CONFIG]) {
         Ok((ssid, password, pairing_token)) => {
-            match attempt_wifi_connection(ssid, password, server_addr) {
-                Ok(_) => {
+            match attempt_wifi_connection(&ssid, &password, server_addr) {
+                Ok(()) => {
                     changed_wifi = true;
                     debug!("[Pairing] Attempting to confirm pairing...");
                     match send_pairing_token_after_wifi_ready(http_client, &pairing_token) {

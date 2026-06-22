@@ -63,7 +63,6 @@ mod notification_target;
 use crate::notification_target::send_notification;
 use crate::pairing::general::{get_input_camera_secret, pair_all};
 use crate::pairing::io::{get_names, read_parse_full_credentials};
-use crate::pairing::wifi::create_wifi_hotspot;
 
 #[cfg(any(feature = "raspberry", feature = "ip"))]
 mod fmp4;
@@ -77,6 +76,7 @@ cfg_if! {
     } else if #[cfg(feature = "raspberry")] {
         mod raspberry_pi;
         use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
+        use crate::pairing::wifi::create_wifi_hotspot;
     } else if #[cfg(feature = "ip")] {
         mod ip;
         use crate::ip::ip_camera::IpCamera;
@@ -270,7 +270,7 @@ fn reset(camera: &dyn Camera, reset_full: bool) -> anyhow::Result<()> {
 
     for tag in MLS_CLIENT_TAGS.iter().take(NUM_MLS_CLIENTS) {
         let (camera_name, group_name) = get_names(
-            camera.get_state_dir(),
+            &camera.get_state_dir(),
             first_time,
             format!("camera_{}_name", tag),
             format!("group_{}_name", tag),
@@ -339,7 +339,7 @@ pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> anyhow::
     let mut clients = Vec::with_capacity(MLS_CLIENT_TAGS.len());
     for client_tag in MLS_CLIENT_TAGS {
         let (camera_name, group_name) = get_names(
-            camera.get_state_dir(),
+            &camera.get_state_dir(),
             first_time,
             format!("camera_{}_name", client_tag),
             format!("group_{}_name", client_tag),
