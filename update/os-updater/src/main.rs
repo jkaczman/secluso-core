@@ -31,14 +31,20 @@ const REPO_ROOT: &str = "https://mirror.secluso.net/tuf-repo";
 // Therefore, it is NOT stored in a mutable place such as /data.
 // This tells TUF the trusted keys (and is signed by such keys) and specifies trusted keys for other top-level roles.
 // It also specifies thresholds for quorums for each role [root, snapshot, targets, timestamp]
-const ROOT_FILE: &str = "/home/pi/root.json";
+const ROOT_FILE: &str = "root.json";
 
 // tough requires async
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    let current_slot = match bootloader::get_current()? {
+        0 => "/slot-a",
+        1 => "/slot-b",
+        other => panic!("unexpected slot {other}"),
+    };
+
     // Establish trust with the out-of-band root.
-    let root_file_contents =
-        read(ROOT_FILE).context("The root file is not in the expected place")?;
+    let root_file_contents = read(format!("{current_slot}/{ROOT_FILE}"))
+        .context("The root file is not in the expected place")?;
 
     // metadata_base_url and targets_base_url are the base URLs where the client can find metadata (such as root.json) and targets (as listed in targets.json).
     let metadata_base_url = Url::parse(&format!("{REPO_ROOT}/metadata"))?;
