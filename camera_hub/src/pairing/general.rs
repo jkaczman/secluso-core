@@ -1,10 +1,11 @@
 use crate::initialize_mls_clients;
 
 cfg_if::cfg_if! {
-    if #[cfg(feature = "raspberry")] {
+    if #[cfg(any(feature = "test", feature = "raspberry"))] {
         use secluso_client_lib::http_client::HttpClient;
         use crate::pairing::wifi::{self, create_wifi_hotspot};
         use std::process::Command;
+        use secluso_client_lib::mls_clients::CONFIG;
     }
 }
 
@@ -12,7 +13,7 @@ use crate::traits::Camera;
 use crate::version::camera_version_info;
 use openmls::key_packages::KeyPackage;
 use secluso_client_lib::mls_client::MlsClient;
-use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
+use secluso_client_lib::mls_clients::MlsClients;
 use secluso_client_lib::pairing::{self, generate_ip_camera_secret};
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind};
@@ -146,7 +147,7 @@ fn try_pairing(
         }
     }
 
-    #[cfg(feature = "raspberry")]
+    #[cfg(any(feature = "raspberry", feature = "test"))]
     {
         debug!("[Pairing] Before receiving credentials");
         match wifi::receive_credentials_full(stream, &mut mls_clients[CONFIG]) {
@@ -156,12 +157,13 @@ fn try_pairing(
                 return false;
             }
         }
-
+    }
+    #[cfg(feature = "raspberry")]
+    {
         debug!("[Pairing] Before parsing credentials");
         let (server_username, server_password, server_addr) =
-        crate::pairing::io::read_parse_full_credentials();
+            crate::pairing::io::read_parse_full_credentials();
         let http_client = HttpClient::new(server_addr.clone(), server_username, server_password);
-
 
         let (changed_wifi, success) = wifi::attempt_wifi_pair(
             stream,

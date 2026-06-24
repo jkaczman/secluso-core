@@ -200,7 +200,6 @@ fn main() -> io::Result<()> {
             let camera_list: Vec<Box<dyn Camera + Send>> = vec![Box::new(camera)];
 
             let input_camera_secret = Some(get_input_camera_secret());
-            let connect_to_wifi = false;
         } else {
             compile_error!("One of the features 'manual', 'raspberry', 'ip', or 'test' must be enabled.");
         }
