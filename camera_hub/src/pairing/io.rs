@@ -15,7 +15,6 @@ use secluso_client_server_lib::auth::parse_user_credentials_full;
 // our security guarantees. Will only cause availability issues.
 pub(crate) const NUM_RANDOM_CHARS: u8 = 16;
 
-
 /// Returns username, password, and server addr
 pub fn read_parse_full_credentials() -> (String, String, String) {
     let file = File::open("credentials_full").expect("Could not open user_credentials file");
@@ -30,7 +29,6 @@ pub fn read_parse_full_credentials() -> (String, String, String) {
 
     (server_username, server_password, server_addr)
 }
-
 
 /// Utility function for outside the pairing module
 pub fn get_names(
@@ -145,4 +143,20 @@ pub(crate) fn read_varying_len(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>
     }
 
     Ok(msg)
+}
+
+pub fn get_input_camera_secret() -> Vec<u8> {
+    let pathname = match std::env::var("SECLUSO_USE_PROVISION").as_deref() {
+        Ok("1") => "/provision/camera_secret",
+        _ => "./camera_secret",
+    };
+
+    let file = File::open(pathname).expect(
+        "Could not open file \"camera_secret\". You can generate this with the config_tool",
+    );
+    let mut reader =
+        BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
+    let data = reader.fill_buf().unwrap();
+
+    data.to_vec()
 }

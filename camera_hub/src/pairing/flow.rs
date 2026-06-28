@@ -15,8 +15,7 @@ use openmls::key_packages::KeyPackage;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::MlsClients;
 use secluso_client_lib::pairing::{self, generate_ip_camera_secret};
-use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind};
+use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -240,20 +239,4 @@ fn perform_pairing_handshake(
     crate::pairing::io::write_varying_len(stream, &camera_msg)?;
 
     Ok(app_key_package)
-}
-
-pub fn get_input_camera_secret() -> Vec<u8> {
-    let pathname = match std::env::var("SECLUSO_USE_PROVISION").as_deref() {
-        Ok("1") => "/provision/camera_secret",
-        _ => "./camera_secret",
-    };
-
-    let file = File::open(pathname).expect(
-        "Could not open file \"camera_secret\". You can generate this with the config_tool",
-    );
-    let mut reader =
-        BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
-    let data = reader.fill_buf().unwrap();
-
-    data.to_vec()
 }

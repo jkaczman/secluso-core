@@ -61,8 +61,8 @@ mod version;
 mod notification_target;
 
 use crate::notification_target::send_notification;
-use crate::pairing::general::{get_input_camera_secret, pair_all};
-use crate::pairing::io::{get_names, read_parse_full_credentials};
+use crate::pairing::flow::pair_all;
+use crate::pairing::io::{get_input_camera_secret, get_names, read_parse_full_credentials};
 
 #[cfg(any(feature = "raspberry", feature = "ip"))]
 mod fmp4;
