@@ -18,7 +18,6 @@ use secluso_client_lib::mls_clients::{
     MlsClientsCommon, MlsClientsDedicated,
 };
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
-use std::array;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -30,6 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Instant;
 use std::{thread, time::Duration};
+use anyhow::anyhow;
 
 mod delivery_monitor;
 
@@ -52,10 +52,6 @@ use crate::traits::Camera;
 
 mod pairing;
 
-use crate::pairing::{
-    create_wifi_hotspot, get_input_camera_secret, get_names, pair_all, read_parse_full_credentials,
-};
-
 mod config;
 
 use crate::config::process_config_command;
@@ -65,6 +61,8 @@ mod version;
 mod notification_target;
 
 use crate::notification_target::send_notification;
+use crate::pairing::flow::pair_all;
+use crate::pairing::io::{get_input_camera_secret, get_names, read_parse_full_credentials};
 
 #[cfg(any(feature = "raspberry", feature = "ip"))]
 mod fmp4;
@@ -78,6 +76,7 @@ cfg_if! {
     } else if #[cfg(feature = "raspberry")] {
         mod raspberry_pi;
         use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
+        use crate::pairing::wifi::create_wifi_hotspot;
     } else if #[cfg(feature = "ip")] {
         mod ip;
         use crate::ip::ip_camera::IpCamera;
@@ -143,9 +142,9 @@ fn main() -> io::Result<()> {
         .unwrap_or_else(|e| e.exit());
 
     // Create the general outer directories (where we'll have inner directories representing each camera)
-    fs::create_dir_all(STATE_DIR_GENERAL).unwrap();
-    fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
-    fs::create_dir_all(THUMBNAIL_DIR_GENERAL).unwrap();
+    fs::create_dir_all(STATE_DIR_GENERAL)?;
+    fs::create_dir_all(VIDEO_DIR_GENERAL)?;
+    fs::create_dir_all(THUMBNAIL_DIR_GENERAL)?;
 
     // Write the updater's component-scoped version marker
     fs::create_dir_all(VERSION_DIR)?;
@@ -163,7 +162,6 @@ fn main() -> io::Result<()> {
             let camera_list: Vec<Box<dyn Camera + Send>> = vec![Box::new(camera)];
             // Manual mode is meant to stand in for the Raspberry Pi camera during local testing
             let input_camera_secret = Some(get_input_camera_secret());
-            let connect_to_wifi = false;
         } else if #[cfg(feature = "raspberry")] {
             let camera = RaspberryPiCamera::new(
                 "RPi".to_string(),
@@ -178,9 +176,6 @@ fn main() -> io::Result<()> {
 
             // This means that the secret will be provided to the hub in the camera_secret file.
             let input_camera_secret = Some(get_input_camera_secret());
-            // This means that the camera_hub needs to receive the WiFi info from the app and
-            // connect to the WiFi network.
-            let connect_to_wifi = true;
         } else if #[cfg(feature = "ip")] {
             // When using IP cameras, the hub can support multiple cameras.
             // The info for these cameras should be encoded in the cameras.yaml
@@ -193,8 +188,6 @@ fn main() -> io::Result<()> {
             // That is the case when using a hub with IP cameras, but not in the case of the
             // Raspberry Pi camera.
             let input_camera_secret: Option<Vec<u8>> = None;
-
-            let connect_to_wifi = false;
         } else if #[cfg(feature = "test")] {
             let camera = TestCamera {
                 name: "TestCamera".to_string(),
@@ -207,7 +200,6 @@ fn main() -> io::Result<()> {
             let camera_list: Vec<Box<dyn Camera + Send>> = vec![Box::new(camera)];
 
             let input_camera_secret = Some(get_input_camera_secret());
-            let connect_to_wifi = false;
         } else {
             compile_error!("One of the features 'manual', 'raspberry', 'ip', or 'test' must be enabled.");
         }
@@ -244,7 +236,6 @@ fn main() -> io::Result<()> {
                 match core(
                     camera.as_mut(),
                     input_camera_secret.clone(),
-                    connect_to_wifi,
                 ) {
                     Ok(_) => {}
                     Err(e) => {
@@ -263,7 +254,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn reset(camera: &dyn Camera, reset_full: bool) -> io::Result<()> {
+fn reset(camera: &dyn Camera, reset_full: bool) -> anyhow::Result<()> {
     // FIXME: has some code copy/pasted from core()
     let state_dir = camera.get_state_dir();
     let state_dir_path = Path::new(&state_dir);
@@ -278,11 +269,11 @@ fn reset(camera: &dyn Camera, reset_full: bool) -> io::Result<()> {
 
     for tag in MLS_CLIENT_TAGS.iter().take(NUM_MLS_CLIENTS) {
         let (camera_name, group_name) = get_names(
-            camera.get_state_dir(),
+            &camera.get_state_dir(),
             first_time,
             format!("camera_{}_name", tag),
             format!("group_{}_name", tag),
-        );
+        )?;
 
         // First, clean up MLS users
         match MlsClient::new(
@@ -343,35 +334,37 @@ fn reset(camera: &dyn Camera, reset_full: bool) -> io::Result<()> {
     Ok(())
 }
 
-pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> MlsClients {
-    array::from_fn(|i| {
+pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> anyhow::Result<MlsClients> {
+    let mut clients = Vec::with_capacity(MLS_CLIENT_TAGS.len());
+    for client_tag in MLS_CLIENT_TAGS {
         let (camera_name, group_name) = get_names(
-            camera.get_state_dir(),
+            &camera.get_state_dir(),
             first_time,
-            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
-            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
-        );
-        debug!("{} camera_name = {}", MLS_CLIENT_TAGS[i], camera_name);
-        debug!("{} group_name = {}", MLS_CLIENT_TAGS[i], group_name);
+            format!("camera_{}_name", client_tag),
+            format!("group_{}_name", client_tag),
+        )?;
+        debug!("{} camera_name = {}", client_tag, camera_name);
+        debug!("{} group_name = {}", client_tag, group_name);
 
         let mut mls_client = MlsClient::new(
             camera_name,
             first_time,
             camera.get_state_dir(),
-            MLS_CLIENT_TAGS[i].to_string(),
+            client_tag.to_string(),
             ClientType::Camera,
         )
-        .expect("MlsClient::new() for returned error.");
+            .expect("MlsClient::new() for returned error.");
 
         if first_time {
-            mls_client.create_group(&group_name).unwrap();
+            mls_client.create_group(&group_name)?;
             debug!("Created group.");
         }
 
-        mls_client.save_group_state().unwrap();
+        mls_client.save_group_state()?;
+        clients.push(mls_client);
+    }
 
-        mls_client
-    })
+    clients.try_into().map_err(|_| anyhow!("Failed to convert clients vec to MlsClients"))
 }
 
 fn split_clients(clients: MlsClients) -> (MlsClientsCommon, MlsClientsDedicated) {
@@ -382,17 +375,17 @@ fn split_clients(clients: MlsClients) -> (MlsClientsCommon, MlsClientsDedicated)
 fn core(
     camera: &mut dyn Camera,
     input_camera_secret: Option<Vec<u8>>,
-    connect_to_wifi: bool,
 ) -> anyhow::Result<()> {
     let state_dir = camera.get_state_dir();
     let first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
 
-    if first_time && connect_to_wifi {
+    #[cfg(feature = "raspberry")]
+    if first_time {
         println!("Creating WiFi hotspot.");
         create_wifi_hotspot();
     }
 
-    let mut clients: MlsClients = initialize_mls_clients(camera, first_time);
+    let mut clients: MlsClients = initialize_mls_clients(camera, first_time)?;
 
     let camera_name = camera.get_name();
 
@@ -401,7 +394,7 @@ fn core(
             "[{}] Waiting to be paired with the mobile app.",
             camera_name
         );
-        pair_all(camera, &mut clients, input_camera_secret, connect_to_wifi)?;
+        pair_all(camera, &mut clients, input_camera_secret)?;
 
         File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
 
